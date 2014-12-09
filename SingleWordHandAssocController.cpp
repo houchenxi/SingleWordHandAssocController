@@ -431,6 +431,10 @@ int main()
 	// inst->DeleteAssocBigram(5999,59999);
 	// goto PRINT_RESULT;
 	
+	inst->LearnAssocBigram(0x4FAF,0x6668);
+	inst->LearnAssocBigram(0x6668,0x66E6);
+	
+	if(false)
 	for(int i = 0; i < 6000; i++)
 		for(int j = i*10; j < i*10 + 10; j++)
 		{
@@ -454,6 +458,7 @@ int main()
 	int num;
 
 	PRINT_RESULT:
+	if(false)
 	for(int i = 0; i < 6000; i++)
 	{
 		inst->GetSingleWordAssocGrams(i,array,num);
