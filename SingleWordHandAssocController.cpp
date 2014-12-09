@@ -10,7 +10,8 @@ bool SingleWordHandAssocController::m_bIsAttached = false;
 // 构造
 SingleWordHandAssocController::SingleWordHandAssocController():
 m_nAssocCount(0),
-m_ptAssocBigram(NULL)
+m_ptAssocBigram(NULL),
+m_nPseudoTime(0)
 {
 	m_ptAssocBigram = new t_SingleHandAssocBigram[ START_SINGLE_WORD_HAND_ASSOC_BIGRAM_COUNT ];
 	memset(m_ptAssocBigram, 0, START_SINGLE_WORD_HAND_ASSOC_BIGRAM_COUNT * sizeof(t_SingleHandAssocBigram) );
@@ -45,6 +46,7 @@ SingleWordHandAssocController* SingleWordHandAssocController::GetInstance()
 // 学词
 bool SingleWordHandAssocController::LearnAssocBigram(const s_wchar p_cLeft, const s_wchar p_cRight)
 {	
+	// 空的时候特殊处理
 	if ( m_nAssocCount == 0 )	
 	{
 		// 如果二元数组为空，放到下标为0的第一个位置上
@@ -54,9 +56,9 @@ bool SingleWordHandAssocController::LearnAssocBigram(const s_wchar p_cLeft, cons
 		SetRightGram(0, p_cRight);
 		ResetFreq(0);
 		IncreaseFreq(0);
+		StampPseudotime(0);
 		return true;
 	}
-	
 	
 	int nPos = FindtPositionForUpdateOrInsert(p_cLeft, p_cRight);
 	
@@ -65,24 +67,30 @@ bool SingleWordHandAssocController::LearnAssocBigram(const s_wchar p_cLeft, cons
 	{
 		// 左右元都相同，说明联想二元已学过，需要更新输入次数
 		IncreaseFreq(nPos);
-		return true;
 	}
 	else
-	{
-		// 左右元不完全相同，说明是联想二元的插入位置下标，需要移位插入
-		
-		// 先检查是否需要扩容
-		if ( m_nAssocCount >= START_SINGLE_WORD_HAND_ASSOC_BIGRAM_COUNT &&
-			(m_nAssocCount - START_SINGLE_WORD_HAND_ASSOC_BIGRAM_COUNT) % INCR_STEP_SINGLE_WORD_HAND_ASSOC_BIGRAM_COUNT == 0)
+	{		
+		// 先检查是否达到容量上限，否则考虑扩容
+		if ( m_nAssocCount >= MAX_SINGLE_WORD_HAND_ASSOC_BIGRAM_COUNT )
 		{
+			// 淘汰
+			Eliminate();
+			
+			// 淘汰后需要重新确定插入位置
+			nPos = FindtPositionForUpdateOrInsert(p_cLeft, p_cRight);
+		}		
+		else if ( m_nAssocCount >= START_SINGLE_WORD_HAND_ASSOC_BIGRAM_COUNT &&
+			(m_nAssocCount - START_SINGLE_WORD_HAND_ASSOC_BIGRAM_COUNT) % INCR_STEP_SINGLE_WORD_HAND_ASSOC_BIGRAM_COUNT == 0 )
+		{
+			// 扩容
 			if(!ExpandVolume())
 			{
-				// 扩容失败，容量已经达到上限，需要淘汰
-				Eliminate();
+				// 扩容失败，返回错误
+				return false;
 			}
-		}
+		}	
 
-		// 移动内存插入新的手写联想二元
+		// 左右元不完全相同，说明是联想二元的插入位置下标，需要移位插入
 		memmove(&m_ptAssocBigram[ nPos + 1 ],
 				&m_ptAssocBigram[ nPos ],
 				(m_nAssocCount - nPos) * sizeof(m_ptAssocBigram[0]) );
@@ -93,6 +101,23 @@ bool SingleWordHandAssocController::LearnAssocBigram(const s_wchar p_cLeft, cons
 		IncreaseFreq(nPos);
 		
 		m_nAssocCount++;
+	}
+	StampPseudotime(nPos);				// 盖上伪时间
+
+	return true;
+}
+
+// 删词
+bool SingleWordHandAssocController::DeleteAssocBigram(const s_wchar p_cLeft, const s_wchar p_cRight)
+{
+	int nPos = FindtPositionForUpdateOrInsert(p_cLeft, p_cRight);
+	
+	if ( 	GetLeftGram(nPos) == p_cLeft 
+		&& 	GetRightGram(nPos) == p_cRight)	
+	{
+		// 左右元都相同，找到了要删除的二元
+		memmove( m_ptAssocBigram + nPos, m_ptAssocBigram + nPos + 1, ( m_nAssocCount - nPos - 1 ) * sizeof(m_ptAssocBigram[0]) );
+		m_nAssocCount--;
 	}
 	
 	return true;
@@ -127,6 +152,12 @@ void	SingleWordHandAssocController::IncreaseFreq(int p_nIndex)
 void	SingleWordHandAssocController::ResetFreq(int p_nIndex)
 {
 	m_ptAssocBigram[ p_nIndex ].m_nFreq = 0;
+}
+
+
+void	SingleWordHandAssocController::StampPseudotime(int p_nIndex)
+{
+	m_ptAssocBigram[ p_nIndex ].m_nPseudoTime = m_nPseudoTime++;	// 盖上伪时间之后，将控制器伪时间加一
 }
 
 // 查词
@@ -195,7 +226,7 @@ bool SingleWordHandAssocController::Attach(const char* p_szPath)
 	int fp = open(p_szPath, O_RDONLY);
 	if (fp > 0)
 	{
-		read(fp, &m_nAssocCount, sizeof(int));
+		read(fp, &m_nAssocCount, sizeof(m_nAssocCount));
 		
 		if ( m_nAssocCount > MAX_SINGLE_WORD_HAND_ASSOC_BIGRAM_COUNT )
 		{
@@ -206,7 +237,10 @@ bool SingleWordHandAssocController::Attach(const char* p_szPath)
 		if ( m_nAssocCount >= START_SINGLE_WORD_HAND_ASSOC_BIGRAM_COUNT )
 		{
 			t_SingleHandAssocBigram* pOldBase = m_ptAssocBigram;
-			m_ptAssocBigram = new t_SingleHandAssocBigram[m_nAssocCount];
+			int nCapacity = START_SINGLE_WORD_HAND_ASSOC_BIGRAM_COUNT + 
+				(( m_nAssocCount - START_SINGLE_WORD_HAND_ASSOC_BIGRAM_COUNT ) / INCR_STEP_SINGLE_WORD_HAND_ASSOC_BIGRAM_COUNT + 1)
+				* INCR_STEP_SINGLE_WORD_HAND_ASSOC_BIGRAM_COUNT;
+			m_ptAssocBigram = new t_SingleHandAssocBigram[nCapacity];
 			if (!m_ptAssocBigram)
 			{
 				m_ptAssocBigram = pOldBase;
@@ -217,7 +251,9 @@ bool SingleWordHandAssocController::Attach(const char* p_szPath)
 			delete[] pOldBase;
 		}
 		
-		read(fp, m_ptAssocBigram, sizeof(t_SingleHandAssocBigram) * m_nAssocCount);
+		read(fp, &m_nPseudoTime, sizeof(m_nPseudoTime));
+		
+		read(fp, m_ptAssocBigram, sizeof(m_ptAssocBigram[0]) * m_nAssocCount);
 		close(fp);
 		m_bIsAttached = true;
 		return true;
@@ -233,8 +269,9 @@ bool SingleWordHandAssocController::Save(const char* p_szPath)
 {
 	int fd = open(p_szPath, O_RDWR | O_CREAT, S_IRWXU | S_IRWXG | S_IRWXO );
 
-	write(fd, &m_nAssocCount, sizeof(int));
-	write(fd, m_ptAssocBigram, sizeof(t_SingleHandAssocBigram) * m_nAssocCount);
+	write(fd, &m_nAssocCount, sizeof(m_nAssocCount));
+	write(fd, &m_nPseudoTime, sizeof(m_nPseudoTime));	
+	write(fd, m_ptAssocBigram, sizeof(m_ptAssocBigram[0]) * m_nAssocCount);
 
 	close(fd);
 
@@ -372,7 +409,15 @@ void SingleWordHandAssocController::Eliminate()
 {
 	if ( m_nAssocCount >= MAX_SINGLE_WORD_HAND_ASSOC_BIGRAM_COUNT )
 	{
-	
+		const int nPostEliminationTotal = 0.75 * MAX_SINGLE_WORD_HAND_ASSOC_BIGRAM_COUNT;
+		
+		qsort(m_ptAssocBigram, m_nAssocCount, sizeof(m_ptAssocBigram[0]), EliminateCompare4HandAssoc);
+		
+		m_nAssocCount = nPostEliminationTotal;
+		
+		qsort(m_ptAssocBigram, m_nAssocCount, sizeof(m_ptAssocBigram[0]), UnicodeCompare4HandAssoc);
+		
+		// LOG_DEBUG("SingleWordHandAssocController::Eliminate Elimination Completed. m_nAssocCount = ", m_nAssocCount);
 	}
 }
 
@@ -381,8 +426,13 @@ int main()
 	SingleWordHandAssocController* inst = SingleWordHandAssocController::GetInstance();
 	// for(int i = 19; i >= 10; i--)
 		// for(int j = 19; j >= 10; j--)
-	for(int i = 0; i < 100; i++)
-		for(int j = 0; j < 100; j++)
+		
+	// 单条删词测试
+	// inst->DeleteAssocBigram(5999,59999);
+	// goto PRINT_RESULT;
+	
+	for(int i = 0; i < 6000; i++)
+		for(int j = i*10; j < i*10 + 10; j++)
 		{
 			cout << i << "," << j << endl;
 			
@@ -390,14 +440,29 @@ int main()
 				inst->LearnAssocBigram(i,j);
 		}
 
+	// 删词测试
+	DELETE_TEST:
+	if(false)
+	for(int i = 5999; i >=0 ; i--)
+		for(int j = i*10 + 9; j >= i*10 ; j--)
+		{
+			inst->DeleteAssocBigram(i,j);
+		}
+		
+
 	t_SingleHandAssocBigram array[1000];
 	int num;
 
-	for(int i = 0; i < 100; i++)
+	PRINT_RESULT:
+	for(int i = 0; i < 6000; i++)
 	{
 		inst->GetSingleWordAssocGrams(i,array,num);
+		if ( 0 == num )
+			continue;
+			
+		cout << "[" << i << "]"  << "[" << num << "]" << "\t" ;
 		for(int j = 0; j < num; j++)
-			cout << array[j].m_cRight << "\t";
+			cout << array[j].m_cRight /*<< "(" << array[j].m_nFreq << "," << array[j].m_nPseudoTime << ")"*/ << "\t";
 		cout << endl;
 	}
 	
